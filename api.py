@@ -594,7 +594,7 @@ async def video_dl(url: str = Query(...)):
                 
                 ordered = OrderedDict()
                 ordered["api_owner"] = "@ISmartCoder"
-                ordereordered["updates_channel"] = "@TheSmartDevs"
+                ordered["updates_channel"] = "@TheSmartDevs"
                 ordered["title"] = data.get("title", youtube_data["title"])
                 ordered["channel"] = youtube_data["channel"]
                 ordered["description"] = youtube_data["description"]
