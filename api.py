@@ -8,7 +8,7 @@ import asyncio
 import uvloop
 import logging
 from fastapi import FastAPI, Query, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from contextlib import asynccontextmanager
 from collections import OrderedDict
 import os
@@ -81,6 +81,25 @@ def getVideoId(link: str) -> str:
     if "youtu.be" in link: return link.split("/")[-1].split("?")[0][:11]
     return link[-11:]
 
+def extract_video_id(url: str) -> str:
+    patterns = [
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/watch\?v=([^&?\s]+)',
+        r'(?:https?:\/\/)?youtu\.be\/([^&?\s]+)',
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/embed\/([^&?\s]+)',
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/v\/([^&?\s]+)',
+        r'(?:https?:\/\/)?(?:www\.)?youtube\.com\/shorts\/([^&?\s]+)'
+    ]
+    for pattern in patterns:
+        match = re.match(pattern, url)
+        if match:
+            return match.group(1)
+    
+    query_match = re.search(r'v=([^&?\s]+)', url)
+    if query_match:
+        return query_match.group(1)
+
+    return None
+
 def getPlaylistId(link: str) -> str:
     m = re.search(r"list=([a-zA-Z0-9-_]+)", link)
     return "VL" + m.group(1) if m and not m.group(1).startswith("VL") else m.group(1)
@@ -92,6 +111,27 @@ def getValue(source: dict, path: list) -> Any:
         if isinstance(p, int): val = val[p] if len(val) > p else None
         else: val = val.get(p)
     return val
+
+def parse_duration(duration: str) -> str:
+    try:
+        match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration)
+        if not match:
+            return "N/A"
+
+        hours = int(match.group(1) or 0)
+        minutes = int(match.group(2) or 0)
+        seconds = int(match.group(3) or 0)
+
+        formatted = ""
+        if hours > 0:
+            formatted += f"{hours}h "
+        if minutes > 0:
+            formatted += f"{minutes}m "
+        if seconds > 0:
+            formatted += f"{seconds}s"
+        return formatted.strip() or "0s"
+    except Exception:
+        return "N/A"
 
 class JSONResponseWithMeta(JSONResponse):
     def __init__(self, content, start_time, **kwargs):
@@ -106,7 +146,7 @@ class JSONResponseWithMeta(JSONResponse):
         super().__init__(content_with_meta, **kwargs)
 
 async def get_session() -> aiohttp.ClientSession:
-    timeout = aiohttp.ClientServerTimeout(total=30)
+    timeout = aiohttp.ClientTimeout(total=30)
     return aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": userAgent})
 
 async def fetch_player(video_id: str, client: str = "ANDROID"):
@@ -210,6 +250,39 @@ async def fetch_hashtag_params(hashtag: str, hl: str = "en", gl: str = "US"):
     finally:
         await session.close()
     return None
+
+async def fetch_youtube_details_api(video_id: str):
+    try:
+        api_url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id={video_id}&key={searchKey}"
+        session = await get_session()
+        try:
+            async with session.get(api_url) as response:
+                if response.status != 200:
+                    return {"error": "Failed to fetch YouTube video details."}
+
+                data = await response.json()
+                if not data.get('items'):
+                    return {"error": "No video found for the provided ID."}
+
+                video = data['items'][0]
+                snippet = video['snippet']
+                stats = video['statistics']
+                content_details = video['contentDetails']
+
+                return {
+                    "title": snippet.get('title', 'N/A'),
+                    "channel": snippet.get('channelTitle', 'N/A'),
+                    "description": snippet.get('description', 'N/A'),
+                    "imageUrl": snippet.get('thumbnails', {}).get('high', {}).get('url', ''),
+                    "duration": parse_duration(content_details.get('duration', '')),
+                    "views": stats.get('viewCount', 'N/A'),
+                    "likes": stats.get('likeCount', 'N/A'),
+                    "comments": stats.get('commentCount', 'N/A')
+                }
+        finally:
+            await session.close()
+    except Exception:
+        return {"error": "Failed to fetch YouTube video details."}
 
 async def fetch_youtube_details(video_id: str):
     try:
@@ -485,23 +558,43 @@ async def hashtag(tag: str, limit: int = 20, continuation: str = None):
     return JSONResponseWithMeta({"videos": videos, "continuation": cont}, start)
 
 @app.get("/video/dl")
-async def video_dl(url: str = Query(..., alias="url")):
+async def video_dl(url: str = Query(...)):
     start = time.time()
     youtube_url = url.strip()
-    if not youtube_url: raise HTTPException(400, "Missing 'url' parameter.")
-    video_id = getVideoId(youtube_url)
-    if not video_id: raise HTTPException(400, "Invalid YouTube URL.")
+    
+    if not youtube_url:
+        raise HTTPException(400, "Missing 'url' parameter.")
+    
+    video_id = extract_video_id(youtube_url)
+    if not video_id:
+        raise HTTPException(400, "Invalid YouTube URL.")
+    
     standard_url = f"https://www.youtube.com/watch?v={video_id}"
-    youtube_data = await fetch_youtube_details(video_id)
+    
+    youtube_data = await fetch_youtube_details_api(video_id)
+    if "error" in youtube_data:
+        youtube_data = {
+            "title": "Unavailable",
+            "channel": "N/A",
+            "description": "N/A",
+            "imageUrl": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+            "duration": "N/A",
+            "views": "N/A",
+            "likes": "N/A",
+            "comments": "N/A"
+        }
+    
     payload = {"url": standard_url}
     session = await get_session()
+    
     try:
         async with session.post("https://www.clipto.com/api/youtube", json=payload) as resp:
             if resp.status == 200:
                 data = await resp.json()
+                
                 ordered = OrderedDict()
                 ordered["api_owner"] = "@ISmartCoder"
-                ordered["updates_channel"] = "@TheSmartDevs"
+                ordereordered["updates_channel"] = "@TheSmartDevs"
                 ordered["title"] = data.get("title", youtube_data["title"])
                 ordered["channel"] = youtube_data["channel"]
                 ordered["description"] = youtube_data["description"]
@@ -512,10 +605,15 @@ async def video_dl(url: str = Query(..., alias="url")):
                 ordered["views"] = youtube_data["views"]
                 ordered["likes"] = youtube_data["likes"]
                 ordered["comments"] = youtube_data["comments"]
+                
                 for key, value in data.items():
                     if key not in ordered:
                         ordered[key] = value
-                return JSONResponseWithMeta(dict(ordered), start)
+                
+                return Response(
+                    content=json.dumps(ordered, ensure_ascii=False, indent=4),
+                    media_type="application/json"
+                )
             else:
                 ordered = OrderedDict()
                 ordered["api_owner"] = "@ISmartCoder"
@@ -531,8 +629,14 @@ async def video_dl(url: str = Query(..., alias="url")):
                 ordered["likes"] = youtube_data["likes"]
                 ordered["comments"] = youtube_data["comments"]
                 ordered["error"] = "Failed to fetch download URL from Clipto API."
-                return JSONResponseWithMeta(dict(ordered), start, status_code=500)
-    except:
+                
+                return Response(
+                    content=json.dumps(ordered, ensure_ascii=False, indent=4),
+                    media_type="application/json",
+                    status_code=500
+                )
+    except Exception as e:
+        log.error(f"Error fetching from Clipto: {e}")
         ordered = OrderedDict()
         ordered["api_owner"] = "@ISmartCoder"
         ordered["updates_channel"] = "@TheSmartDevs"
@@ -547,7 +651,12 @@ async def video_dl(url: str = Query(..., alias="url")):
         ordered["likes"] = youtube_data["likes"]
         ordered["comments"] = youtube_data["comments"]
         ordered["error"] = "Something went wrong. Please contact @ISmartCoder and report the bug."
-        return JSONResponseWithMeta(dict(ordered), start, status_code=500)
+        
+        return Response(
+            content=json.dumps(ordered, ensure_ascii=False, indent=4),
+            media_type="application/json",
+            status_code=500
+        )
     finally:
         await session.close()
 
