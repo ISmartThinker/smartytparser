@@ -3,7 +3,6 @@ import copy
 import re
 import time
 from typing import Union, List, Dict, Any
-from urllib.parse import urlencode
 import aiohttp
 import asyncio
 import uvloop
@@ -14,11 +13,12 @@ from contextlib import asynccontextmanager
 from collections import OrderedDict
 import os
 import uvicorn
+from logging import StreamHandler
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
+    handlers=[StreamHandler()]
 )
 log = logging.getLogger("SmartYTParser")
 
@@ -127,7 +127,7 @@ class JSONResponseWithMeta(JSONResponse):
         content_with_meta = {"meta": meta, "data": content}
         super().__init__(content_with_meta, **kwargs)
 
-async def aiohttp_session():
+async def create_aiohttp_session():
     timeout = aiohttp.ClientTimeout(total=30)
     return aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": userAgent})
 
@@ -135,18 +135,22 @@ async def fetch_player(video_id: str, client: str = "ANDROID"):
     url = "https://www.youtube.com/youtubei/v1/player"
     params = {"key": searchKey, "videoId": video_id, "contentCheckOk": True, "racyCheckOk": True}
     data = copy.deepcopy(CLIENTS[client])
-    async with aiohttp_session() as session:
-        async with session.post(url, params=params, json=data) as r:
-            r.raise_for_status()
-            return await r.json()
+    session = await create_aiohttp_session()
+    async with session.post(url, params=params, json=data) as r:
+        r.raise_for_status()
+        result = await r.json()
+    await session.close()
+    return result
 
 async def fetch_next(video_id: str):
     url = f"https://www.youtube.com/youtubei/v1/next?key={searchKey}"
     data = {"context": {"client": {"clientName": "WEB", "clientVersion": "2.20210224.06.00"}},"videoId": video_id}
-    async with aiohttp_session() as session:
-        async with session.post(url, json=data) as r:
-            r.raise_for_status()
-            return await r.json()
+    session = await create_aiohttp_session()
+    async with session.post(url, json=data) as r:
+        r.raise_for_status()
+        result = await r.json()
+    await session.close()
+    return result
 
 async def fetch_search(query: str, params: str = None, continuation: str = None, hl: str = "en", gl: str = "US"):
     url = "https://www.youtube.com/youtubei/v1/search"
@@ -156,10 +160,12 @@ async def fetch_search(query: str, params: str = None, continuation: str = None,
     payload["context"]["client"]["gl"] = gl
     if params: payload["params"] = params
     if continuation: payload["continuation"] = continuation
-    async with aiohttp_session() as session:
-        async with session.post(url, params={"key": searchKey}, json=payload) as r:
-            r.raise_for_status()
-            return await r.json()
+    session = await create_aiohttp_session()
+    async with session.post(url, params={"key": searchKey}, json=payload) as r:
+        r.raise_for_status()
+        result = await r.json()
+    await session.close()
+    return result
 
 async def fetch_browse(browse_id: str, params: str = None, continuation: str = None, hl: str = "en", gl: str = "US"):
     url = "https://www.youtube.com/youtubei/v1/browse"
@@ -169,10 +175,12 @@ async def fetch_browse(browse_id: str, params: str = None, continuation: str = N
     payload["context"]["client"]["gl"] = gl
     if params: payload["params"] = params
     if continuation: payload["continuation"] = continuation
-    async with aiohttp_session() as session:
-        async with session.post(url, params={"key": searchKey}, json=payload) as r:
-            r.raise_for_status()
-            return await r.json()
+    session = await create_aiohttp_session()
+    async with session.post(url, params={"key": searchKey}, json=payload) as r:
+        r.raise_for_status()
+        result = await r.json()
+    await session.close()
+    return result
 
 async def fetch_comments(continuation: str = None, video_id: str = None):
     url = f"https://www.youtube.com/youtubei/v1/next?key={searchKey}"
@@ -181,35 +189,41 @@ async def fetch_comments(continuation: str = None, video_id: str = None):
         data["continuation"] = continuation
     else:
         data["videoId"] = video_id
-    async with aiohttp_session() as session:
-        async with session.post(url, json=data) as r:
-            r.raise_for_status()
-            return await r.json()
+    session = await create_aiohttp_session()
+    async with session.post(url, json=data) as r:
+        r.raise_for_status()
+        result = await r.json()
+    await session.close()
+    return result
 
 async def fetch_suggestions(query: str, hl: str = "en", gl: str = "US"):
     url = "https://clients1.google.com/complete/search"
     params = {"hl": hl, "gl": gl, "q": query, "client": "youtube", "gs_ri": "youtube", "ds": "yt"}
-    async with aiohttp_session() as session:
-        async with session.get(url, params=params) as r:
-            text = await r.text()
-            json_str = text[text.index("(")+1:text.rindex(")")]
-            data = json.loads(json_str)
-            return [item[0] for item in data[1]]
+    session = await create_aiohttp_session()
+    async with session.get(url, params=params) as r:
+        text = await r.text()
+        json_str = text[text.index("(")+1:text.rindex(")")]
+        data = json.loads(json_str)
+        result = [item[0] for item in data[1]]
+    await session.close()
+    return result
 
 async def fetch_hashtag_params(hashtag: str, hl: str = "en", gl: str = "US"):
     payload = copy.deepcopy(requestPayload)
     payload["query"] = "#" + hashtag
     payload["context"]["client"]["hl"] = hl
     payload["context"]["client"]["gl"] = gl
-    async with aiohttp_session() as session:
-        async with session.post("https://www.youtube.com/youtubei/v1/search", params={"key": searchKey}, json=payload) as r:
-            r.raise_for_status()
-            data = await r.json()
-            items = getValue(data, contentPath) or getValue(data, fallbackContentPath) or []
-            for sec in items:
-                for item in getValue(sec, ["itemSectionRenderer","contents"]) or []:
-                    if hashtagElementKey in item:
-                        return getValue(item, [hashtagElementKey, "onTapCommand", "browseEndpoint", "params"])
+    session = await create_aiohttp_session()
+    async with session.post("https://www.youtube.com/youtubei/v1/search", params={"key": searchKey}, json=payload) as r:
+        r.raise_for_status()
+        data = await r.json()
+        items = getValue(data, contentPath) or getValue(data, fallbackContentPath) or []
+        for sec in items:
+            for item in getValue(sec, ["itemSectionRenderer","contents"]) or []:
+                if hashtagElementKey in item:
+                    await session.close()
+                    return getValue(item, [hashtagElementKey, "onTapCommand", "browseEndpoint", "params"])
+    await session.close()
     return None
 
 async def fetch_youtube_details(video_id: str):
@@ -348,7 +362,7 @@ def extract_playlist(data: dict):
             "videoCount": getValue(primary, ["stats",0,"runs",0,"text"]),
             "viewCount": getValue(primary, ["stats",1,"simpleText"]),
             "thumbnails": getValue(primary, ["thumbnailRenderer","playlistVideoThumbnailRenderer","thumbnail","thumbnails"]) or getValue(primary, ["thumbnailRenderer","playlistCustomThumbnailRenderer","thumbnail","thumbnails"]),
-            "channel": {"name": getValue(owner, ["title","runs",0,"text"]),"id876": getValue(owner, ["title","runs",0,"navigationEndpoint","browseEndpoint","browseId"])}
+            "channel": {"name": getValue(owner, ["title","runs",0,"text"]),"id": getValue(owner, ["title","runs",0,"navigationEndpoint","browseEndpoint","browseId"])}
         },
         "videos": videos
     }
@@ -415,7 +429,7 @@ async def video_info(video_id: str = Query(..., regex="^.{11}$")):
 @app.get("/video/formats")
 async def video_formats(video_id: str = Query(..., regex="^.{11}$")):
     start = time.time()
-    log.info(f"Fetching formats: {video_id}")
+    log.info(f"Fetching formats: ...
     player = await fetch_player(video_id, "TV_EMBED")
     return JSONResponseWithMeta(extract_formats(player), start)
 
@@ -521,44 +535,46 @@ async def video_dl(url: str = Query(..., alias="url")):
     standard_url = f"https://www.youtube.com/watch?v={video_id}"
     youtube_data = await fetch_youtube_details(video_id)
     payload = {"url": standard_url}
+    session = await create_aiohttp_session()
     try:
-        async with aiohttp_session() as session:
-            async with session.post("https://www.clipto.com/api/youtube", json=payload) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    ordered = OrderedDict()
-                    ordered["api_owner"] = "@ISmartCoder"
-                    ordered["updates_channel"] = "@TheSmartDevs"
-                    ordered["title"] = data.get("title", youtube_data["title"])
-                    ordered["channel"] = youtube_data["channel"]
-                    ordered["description"] = youtube_data["description"]
-                    ordered["thumbnail"] = data.get("thumbnail", youtube_data["imageUrl"])
-                    ordered["thumbnail_url"] = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
-                    ordered["url"] = data.get("url", standard_url)
-                    ordered["duration"] = youtube_data["duration"]
-                    ordered["views"] = youtube_data["views"]
-                    ordered["likes"] = youtube_data["likes"]
-                    ordered["comments"] = youtube_data["comments"]
-                    for key, value in data.items():
-                        if key not in ordered:
-                            ordered[key] = value
-                    return JSONResponseWithMeta(dict(ordered), start)
-                else:
-                    ordered = OrderedDict()
-                    ordered["api_owner"] = "@ISmartCoder"
-                    ordered["updates_channel"] = "@TheSmartDevs"
-                    ordered["title"] = youtube_data["title"]
-                    ordered["channel"] = youtube_data["channel"]
-                    ordered["description"] = youtube_data["description"]
-                    ordered["thumbnail"] = youtube_data["imageUrl"]
-                    ordered["thumbnail_url"] = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
-                    ordered["url"] = standard_url
-                    ordered["duration"] = youtube_data["duration"]
-                    ordered["views"] = youtube_data["views"]
-                    ordered["likes"] = youtube_data["likes"]
-                    ordered["comments"] = youtube_data["comments"]
-                    ordered["error"] = "Failed to fetch download URL from Clipto API."
-                    return JSONResponseWithMeta(dict(ordered), start, status_code=500)
+        async with session.post("https://www.clipto.com/api/youtube", json=payload) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                ordered = OrderedDict()
+                ordered["api_owner"] = "@ISmartCoder"
+                ordered["updates_channel"] = "@TheSmartDevs"
+                ordered["title"] = data.get("title", youtube_data["title"])
+                ordered["channel"] = youtube_data["channel"]
+                ordered["description"] = youtube_data["description"]
+                ordered["thumbnail"] = data.get("thumbnail", youtube_data["imageUrl"])
+                ordered["thumbnail_url"] = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+                ordered["url"] = data.get("url", standard_url)
+                ordered["duration"] = youtube_data["duration"]
+                ordered["views"] = youtube_data["views"]
+                ordered["likes"] = youtube_data["likes"]
+                ordered["comments"] = youtube_data["comments"]
+                for key, value in data.items():
+                    if key not in ordered:
+                        ordered[key] = value
+                await session.close()
+                return JSONResponseWithMeta(dict(ordered), start)
+            else:
+                ordered = OrderedDict()
+                ordered["api_owner"] = "@ISmartCoder"
+                ordered["updates_channel"] = "@TheSmartDevs"
+                ordered["title"] = youtube_data["title"]
+                ordered["channel"] = youtube_data["channel"]
+                ordered["description"] = youtube_data["description"]
+                ordered["thumbnail"] = youtube_data["imageUrl"]
+                ordered["thumbnail_url"] = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+                ordered["url"] = standard_url
+                ordered["duration"] = youtube_data["duration"]
+                ordered["views"] = youtube_data["views"]
+                ordered["likes"] = youtube_data["likes"]
+                ordered["comments"] = youtube_data["comments"]
+                ordered["error"] = "Failed to fetch download URL from Clipto API."
+                await session.close()
+                return JSONResponseWithMeta(dict(ordered), start, status_code=500)
     except:
         ordered = OrderedDict()
         ordered["api_owner"] = "@ISmartCoder"
@@ -574,6 +590,7 @@ async def video_dl(url: str = Query(..., alias="url")):
         ordered["likes"] = youtube_data["likes"]
         ordered["comments"] = youtube_data["comments"]
         ordered["error"] = "Something went wrong. Please contact @ISmartCoder and report the bug."
+        await session.close()
         return JSONResponseWithMeta(dict(ordered), start, status_code=500)
 
 @app.get("/health")
