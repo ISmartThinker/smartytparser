@@ -85,6 +85,20 @@ def parse_duration(duration: str) -> str:
     except Exception:
         return "N/A"
 
+def format_seconds(seconds) -> str:
+    try:
+        seconds = int(seconds)
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+        formatted = ""
+        if hours > 0: formatted += f"{hours}h "
+        if minutes > 0: formatted += f"{minutes}m "
+        if secs > 0: formatted += f"{secs}s"
+        return formatted.strip() or "0s"
+    except:
+        return "N/A"
+
 class JSONResponseWithMeta(JSONResponse):
     def __init__(self, content, start_time, **kwargs):
         time_taken = f"{(time.time() - start_time)*1000:.2f}ms"
@@ -152,9 +166,9 @@ async def fetch_youtube_details_api(video_id: str):
                 if not data.get('items'):
                     return {"error": "No video"}
                 video = data['items'][0]
-                snippet = video['snippet']
-                stats = video['statistics']
-                content_details = video['contentDetails']
+                snippet = video.get('snippet', {})
+                stats = video.get('statistics', {})
+                content_details = video.get('contentDetails', {})
                 return {
                     "title": snippet.get('title', 'N/A'),
                     "channel": snippet.get('channelTitle', 'N/A'),
@@ -167,24 +181,38 @@ async def fetch_youtube_details_api(video_id: str):
                 }
         finally:
             await session.close()
-    except:
+    except Exception as e:
+        log.error(f"YouTube API error: {e}")
         return {"error": "Failed"}
 
 async def fetch_youtube_details(video_id: str):
     try:
         player = await fetch_player(video_id)
         vd = player.get("videoDetails", {})
+        if not vd:
+            return {
+                "title": "Unavailable",
+                "channel": "N/A",
+                "description": "N/A",
+                "imageUrl": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+                "duration": "N/A",
+                "views": "N/A",
+                "likes": "N/A",
+                "comments": "N/A"
+            }
+        duration_seconds = vd.get("lengthSeconds")
         return {
-            "title": vd.get("title"),
-            "channel": vd.get("author"),
-            "description": vd.get("shortDescription"),
+            "title": vd.get("title", "Unavailable"),
+            "channel": vd.get("author", "N/A"),
+            "description": vd.get("shortDescription", "N/A"),
             "imageUrl": f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
-            "duration": vd.get("lengthSeconds"),
-            "views": vd.get("viewCount"),
+            "duration": format_seconds(duration_seconds) if duration_seconds else "N/A",
+            "views": vd.get("viewCount", "N/A"),
             "likes": "N/A",
             "comments": "N/A"
         }
-    except:
+    except Exception as e:
+        log.error(f"Fallback fetch error: {e}")
         return {
             "title": "Unavailable",
             "channel": "N/A",
@@ -300,9 +328,11 @@ async def video_dl(url: str = Query(...)):
     if not video_id:
         raise HTTPException(400, "Invalid YouTube URL.")
     standard_url = f"https://www.youtube.com/watch?v={video_id}"
+    
     youtube_data = await fetch_youtube_details_api(video_id)
     if "error" in youtube_data:
         youtube_data = await fetch_youtube_details(video_id)
+    
     payload = {"url": standard_url}
     session = await get_session()
     try:
@@ -312,10 +342,10 @@ async def video_dl(url: str = Query(...)):
                 ordered = OrderedDict()
                 ordered["api_owner"] = "@ISmartCoder"
                 ordered["updates_channel"] = "@TheSmartDevs"
-                ordered["title"] = data.get("title", youtube_data.get("title", "N/A"))
+                ordered["title"] = data.get("title") or youtube_data.get("title", "N/A")
                 ordered["channel"] = youtube_data.get("channel", "N/A")
                 ordered["description"] = youtube_data.get("description", "N/A")
-                ordered["thumbnail"] = data.get("thumbnail", youtube_data.get("imageUrl"))
+                ordered["thumbnail"] = data.get("thumbnail") or youtube_data.get("imageUrl", f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg")
                 ordered["thumbnail_url"] = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
                 ordered["url"] = data.get("url", standard_url)
                 ordered["duration"] = youtube_data.get("duration", "N/A")
@@ -336,7 +366,7 @@ async def video_dl(url: str = Query(...)):
                 ordered["title"] = youtube_data.get("title", "N/A")
                 ordered["channel"] = youtube_data.get("channel", "N/A")
                 ordered["description"] = youtube_data.get("description", "N/A")
-                ordered["thumbnail"] = youtube_data.get("imageUrl")
+                ordered["thumbnail"] = youtube_data.get("imageUrl", f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg")
                 ordered["thumbnail_url"] = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
                 ordered["url"] = standard_url
                 ordered["duration"] = youtube_data.get("duration", "N/A")
@@ -357,7 +387,7 @@ async def video_dl(url: str = Query(...)):
         ordered["title"] = youtube_data.get("title", "N/A")
         ordered["channel"] = youtube_data.get("channel", "N/A")
         ordered["description"] = youtube_data.get("description", "N/A")
-        ordered["thumbnail"] = youtube_data.get("imageUrl")
+        ordered["thumbnail"] = youtube_data.get("imageUrl", f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg")
         ordered["thumbnail_url"] = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
         ordered["url"] = standard_url
         ordered["duration"] = youtube_data.get("duration", "N/A")
