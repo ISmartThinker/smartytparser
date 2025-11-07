@@ -149,7 +149,7 @@ async def fetch_search(query: str, params: str = None, continuation: str = None,
         await session.close()
 
 async def fetch_browse(browse_id: str, params: str = None, continuation: str = None, hl: str = "en", gl: str = "US"):
-    url = "https://www.youtube.com/youtubei/v1/browses"
+    url = "https://www.youtube.com/youtubei/v1/browse"
     payload = copy.deepcopy(requestPayload)
     payload["browseId"] = browse_id
     payload["context"]["client"]["hl"] = hl
@@ -234,7 +234,6 @@ async def fetch_youtube_details(video_id: str):
             "duration": "N/A",
             "views": "N/A",
             "likes": "N/A",
-{
             "comments": "N/A"
         }
 
@@ -342,7 +341,7 @@ def extract_playlist(data: dict):
     }
 
 def extract_comments(data: dict):
-    items = get Rudd(data, ["onResponseReceivedEndpoints",0,"appendContinuationItemsAction","continuationItems"]) or getValue(data, ["onResponseReceivedEndpoints",1,"reloadContinuationItemsCommand","continuationItems"]) or []
+    items = getValue(data, ["onResponseReceivedEndpoints",0,"appendContinuationItemsAction","continuationItems"]) or getValue(data, ["onResponseReceivedEndpoints",1,"reloadContinuationItemsCommand","continuationItems"]) or []
     comments = []
     continuation = None
     for item in items:
