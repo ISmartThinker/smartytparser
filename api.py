@@ -152,9 +152,8 @@ async def get_session() -> aiohttp.ClientSession:
 
 async def fetch_player(video_id: str, client: str = "ANDROID"):
     url = "https://www.youtube.com/youtubei/v1/player"
-    params = {"key": searchKey, "videoId": video_id, "contentCheckOk": True, "racyCheckOk": True}
-    data = copy.deepcopy(CLIENTS[client])
-    data["videoId"] = video_id
+    params = {"key": searchKey, "videoId": video_id, "contentCheckOk": "true", "racyCheckOk": "true"}
+    data = copy.deepcopy(CLIENTS[client]["context"])
     session = await get_session()
     try:
         async with session.post(url, params=params, json=data) as r:
